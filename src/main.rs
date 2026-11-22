@@ -81,6 +81,38 @@ fn extract_text(message: &Value) -> String {
     }
 }
 
+/// Parse `KEY=VALUE` lines (ignoring comments and blanks) from an env file.
+///
+/// The gateway does not always export its own `.env` to MCP children, and putting a real key in
+/// `config.yaml` is off-limits, so `PI_ENV_FILE` points at the file instead and the child receives
+/// the values without the secret ever reaching config.
+fn read_env_file(path: &str) -> HashMap<String, String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            let key = key.trim().trim_start_matches("export ").trim();
+            if key.is_empty() {
+                return None;
+            }
+            Some((
+                key.to_string(),
+                value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string(),
+            ))
+        })
+        .collect()
+}
+
 async fn spawn_session(cwd: &str, model_args: &[String]) -> Result<std::sync::Arc<Session>> {
     let pi_bin = std::env::var("PI_BIN").unwrap_or_else(|_| "pi".to_string());
     let mut cmd = Command::new(&pi_bin);
@@ -93,6 +125,12 @@ async fn spawn_session(cwd: &str, model_args: &[String]) -> Result<std::sync::Ar
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
+    if let Ok(env_file) = std::env::var("PI_ENV_FILE") {
+        for (key, value) in read_env_file(&env_file) {
+            cmd.env(key, value);
+        }
+    }
 
     let mut child = cmd
         .spawn()
@@ -592,6 +630,26 @@ mod tests {
             extract_text(&json!({"role": "assistant", "content": 42})),
             ""
         );
+    }
+
+    #[test]
+    fn env_file_parsing_skips_comments_and_quotes() {
+        let dir = std::env::temp_dir().join("pi-bridge-env-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(".env");
+        std::fs::write(
+            &file,
+            "# comment\nexport DEEPSEEK_API_KEY=\"abc\"\n\nEMPTY=\n",
+        )
+        .unwrap();
+        let parsed = read_env_file(file.to_str().unwrap());
+        assert_eq!(
+            parsed.get("DEEPSEEK_API_KEY").map(String::as_str),
+            Some("abc")
+        );
+        assert_eq!(parsed.get("EMPTY").map(String::as_str), Some(""));
+        assert!(!parsed.contains_key("# comment"));
+        assert!(read_env_file("/nonexistent/file").is_empty());
     }
 
     #[test]

@@ -70,3 +70,10 @@ Per-call: `cwd` is required (`pi_run`, `pi_start`), and `model` maps to Pi's `--
 ## Licence
 
 MIT.
+
+`PI_ENV_FILE` is the safe way to supply credentials: it names a `.env` file whose `KEY=VALUE`
+lines are handed to each Pi child, so keys never land in `config.yaml`:
+
+```bash
+hermes mcp add pi --command /path/to/pi-bridge --env PI_ENV_FILE=/Users/you/.hermes/.env
+```
