@@ -49,7 +49,20 @@ Any other MCP client works the same way: it is a plain stdio server speaking MCP
 
 | Env var | Meaning |
 |---|---|
-| `PI_BIN` | Binary to launch instead of `pi` from `PATH` |
+| `PI_BIN` | Absolute path to the Pi binary. Optional: without it the bridge searches `PATH`, then `~/.nvm/versions/node/*/bin`, Homebrew, `~/.local/bin`, `~/.bun/bin` and `~/.pi/bin` |
+| `PI_ENV_FILE` | A `.env` whose `KEY=VALUE` lines are passed to each Pi child |
+
+### Why the binary is resolved by hand
+
+An MCP host does not run children with a login shell's environment. Hermes starts MCP servers
+with a curated `PATH` that excludes `~/.nvm/versions/node/*/bin`, which is exactly where a global
+`npm install -g @earendil-works/pi-coding-agent` puts `pi` on macOS. The first version trusted
+`PATH` and failed inside Hermes with `failed to start pi --mode rpc` while working perfectly in a
+terminal.
+
+Resolving the path is only half of it: `pi` is a `#!/usr/bin/env node` script, so the bridge also
+prepends the resolved binary's directory to the child's `PATH` — otherwise the spawn succeeds and
+Pi dies instantly with `env: node: No such file or directory`.
 
 Per-call: `cwd` is required (`pi_run`, `pi_start`), and `model` maps to Pi's `--model`.
 

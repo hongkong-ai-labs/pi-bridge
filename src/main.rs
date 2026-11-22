@@ -113,8 +113,71 @@ fn read_env_file(path: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// Resolve the Pi binary.
+///
+/// The gateway runs MCP children with a curated PATH that does **not** include an nvm bin
+/// directory, which is exactly where `pi` gets installed on macOS (`~/.nvm/versions/node/*/bin`).
+/// Trusting PATH alone therefore produced `failed to start pi` inside Hermes while working fine
+/// in a login shell. `PI_BIN` wins, then PATH, then the usual install locations.
+fn resolve_pi_bin() -> Result<String> {
+    if let Ok(explicit) = std::env::var("PI_BIN") {
+        if !explicit.trim().is_empty() {
+            return Ok(explicit);
+        }
+    }
+    if let Some(found) = search_path("pi") {
+        return Ok(found);
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(format!("{home}/.nvm/versions/node")) {
+        let mut versions: Vec<std::path::PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .collect();
+        versions.sort();
+        versions.reverse();
+        for version in versions {
+            candidates.push(version.join("bin/pi"));
+        }
+    }
+    for path in [
+        "/opt/homebrew/bin/pi".to_string(),
+        "/usr/local/bin/pi".to_string(),
+        format!("{home}/.local/bin/pi"),
+        format!("{home}/.bun/bin/pi"),
+        format!("{home}/.pi/bin/pi"),
+    ] {
+        candidates.push(std::path::PathBuf::from(path));
+    }
+    for candidate in &candidates {
+        if candidate.is_file() {
+            return Ok(candidate.to_string_lossy().to_string());
+        }
+    }
+    Err(anyhow!(
+        "pi binary not found. Looked on PATH and in: {}. Set PI_BIN to the absolute path \
+         (e.g. PI_BIN={home}/.nvm/versions/node/<version>/bin/pi).",
+        candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+fn search_path(bin: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(bin);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
 async fn spawn_session(cwd: &str, model_args: &[String]) -> Result<std::sync::Arc<Session>> {
-    let pi_bin = std::env::var("PI_BIN").unwrap_or_else(|_| "pi".to_string());
+    let pi_bin = resolve_pi_bin()?;
     let mut cmd = Command::new(&pi_bin);
     cmd.arg("--mode")
         .arg("rpc")
@@ -125,6 +188,15 @@ async fn spawn_session(cwd: &str, model_args: &[String]) -> Result<std::sync::Ar
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
+    // `pi` is a `#!/usr/bin/env node` script, so its own bin directory has to be on the child's
+    // PATH: resolving the binary but leaving PATH alone still failed with
+    // "env: node: No such file or directory" under a curated environment.
+    if let Some(dir) = std::path::Path::new(&pi_bin).parent() {
+        let existing = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
+        let joined = format!("{}:{existing}", dir.display());
+        cmd.env("PATH", joined);
+    }
 
     if let Ok(env_file) = std::env::var("PI_ENV_FILE") {
         for (key, value) in read_env_file(&env_file) {
