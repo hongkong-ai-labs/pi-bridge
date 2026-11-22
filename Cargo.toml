@@ -1,0 +1,32 @@
+[package]
+name = "pi-bridge"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "MCP server that drives the Pi coding agent over its RPC protocol"
+license = "MIT"
+repository = "https://github.com/hongkong-ai-labs/pi-bridge"
+readme = "README.md"
+keywords = ["mcp", "pi", "agent", "coding", "bridge"]
+categories = ["development-tools", "command-line-utilities"]
+
+[[bin]]
+name = "pi-bridge"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-std",
+    "io-util",
+    "sync",
+    "time",
+] }
+
+[profile.release]
+lto = "thin"
+strip = true
